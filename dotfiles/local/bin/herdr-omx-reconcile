@@ -127,8 +127,7 @@ def pane_spawn_pid_map():
     wanted=set()
     if isinstance(data, dict):
         for ws in data.get('workspaces') or []:
-            wid=ws.get('id')
-            for idx,tab in enumerate(ws.get('tabs') or [], start=1):
+            for tab in ws.get('tabs') or []:
                 for local_id in (tab.get('panes') or {}).keys():
                     wanted.add(str(local_id))
     if not wanted:
@@ -146,12 +145,24 @@ def pane_spawn_pid_map():
     if isinstance(data, dict):
         for ws in data.get('workspaces') or []:
             wid=ws.get('id')
+            if not wid:
+                continue
             for idx,tab in enumerate(ws.get('tabs') or [], start=1):
+                # Herdr public pane ids use the pane-local id from session.json,
+                # not the tab number. Tab 2 can contain pane 3; reporting to
+                # w...-2 would attach the OMX status to tab 1 pane 2.
+                tab_public_fallback = None
+                for candidate in (tab.get('focused'), tab.get('root_pane')):
+                    if candidate is not None:
+                        tab_public_fallback = f'{wid}-{candidate}'
+                        break
                 for local_id in (tab.get('panes') or {}).keys():
-                    pid=mapping.get(str(local_id))
+                    local_id = str(local_id)
+                    pid=mapping.get(local_id)
                     if pid:
-                        out[pid]=f'{wid}-{idx}'
-                        out[f'{wid}:{idx}']=f'{wid}-{idx}'
+                        out[pid]=f'{wid}-{local_id}'
+                if tab_public_fallback:
+                    out[f'{wid}:{idx}']=tab_public_fallback
     return out
 
 def herdr_local_pane_id_map():
@@ -171,16 +182,22 @@ def herdr_local_pane_id_map():
         if not wid:
             continue
         for idx,tab in enumerate(ws.get('tabs') or [], start=1):
-            public=f'{wid}-{idx}'
             keys=set(str(k) for k in (tab.get('panes') or {}).keys())
             root=tab.get('root_pane')
             focused=tab.get('focused')
             if root is not None: keys.add(str(root))
             if focused is not None: keys.add(str(focused))
+            tab_public_fallback=None
+            for candidate in (focused, root):
+                if candidate is not None:
+                    tab_public_fallback=f'{wid}-{candidate}'
+                    break
             for key in keys:
+                public=f'{wid}-{key}'
                 out[key]=public
                 out[f'p_{key}']=public
-                out[f'{wid}:{idx}']=public
+            if tab_public_fallback:
+                out[f'{wid}:{idx}']=tab_public_fallback
     return out
 
 def tty_foreground_root_pid(tty):
@@ -208,6 +225,63 @@ def infer_pane_from_client_tty(session, pid_map):
     if root_pid and root_pid in pid_map:
         return pid_map[root_pid]
     return ''
+
+def session_active_pane_tty(session):
+    proc=run(['tmux','list-panes','-t',session,'-F','#{pane_active} #{pane_tty}'], timeout=0.8)
+    if proc and proc.returncode == 0:
+        for line in proc.stdout.splitlines():
+            if line.startswith('1 '):
+                tty=line[2:].strip()
+                if tty.startswith('/dev/pts/'):
+                    return tty
+    return ''
+
+def pids_on_tty(tty):
+    if not tty.startswith('/dev/'):
+        return []
+    short=tty.replace('/dev/','')
+    proc=run(['ps','-t',short,'-o','pid='], timeout=0.8)
+    if not proc or proc.returncode != 0:
+        return []
+    out=[]
+    for line in proc.stdout.splitlines():
+        try: out.append(int(line.strip()))
+        except Exception: pass
+    return out
+
+def proc_env(pid):
+    try:
+        raw=Path(f'/proc/{pid}/environ').read_bytes().decode(errors='ignore').split('\0')
+    except Exception:
+        return {}
+    env={}
+    for item in raw:
+        if '=' in item:
+            k,v=item.split('=',1)
+            env[k]=v
+    return env
+
+def session_omx_process_env(session, local_pane_map):
+    # OMX_SESSION_ID/OMX_ROOT often live on the Codex child process rather than
+    # tmux's session environment. Read only processes in this tmux session's
+    # active pane TTY, and prefer the one that has both OMX identifiers.
+    tty=session_active_pane_tty(session)
+    best={}
+    for pid in pids_on_tty(tty):
+        env=proc_env(pid)
+        if env.get('OMX_SESSION_ID') and env.get('OMX_ROOT'):
+            best=env
+        elif not best and env.get('HERDR_PANE_ID'):
+            best=env
+    if not best:
+        return {}
+    out={}
+    for key in ('OMX_SESSION_ID','OMX_ROOT','HERDR_PANE_ID'):
+        if best.get(key):
+            out[key]=best[key]
+    if out.get('HERDR_PANE_ID'):
+        out['HERDR_PANE_ID']=local_pane_map.get(out['HERDR_PANE_ID'], out['HERDR_PANE_ID'])
+    return out
 
 def pane_exists(pid):
     proc=run(['herdr','pane','get',pid], timeout=0.8)
@@ -286,9 +360,10 @@ def main():
         if not session.startswith('omx-'):
             continue
         env=tmux_env(session)
-        explicit_pid=env.get('HERDR_PANE_ID')
-        sid=env.get('OMX_SESSION_ID')
-        root=env.get('OMX_ROOT')
+        proc_env_fallback=session_omx_process_env(session, local_pane_map)
+        explicit_pid=env.get('HERDR_PANE_ID') or proc_env_fallback.get('HERDR_PANE_ID')
+        sid=env.get('OMX_SESSION_ID') or proc_env_fallback.get('OMX_SESSION_ID')
+        root=env.get('OMX_ROOT') or proc_env_fallback.get('OMX_ROOT')
         env_pid=local_pane_map.get(explicit_pid or '', explicit_pid or '')
         inferred_pid=infer_pane_from_client_tty(session, pid_map)
         if not inferred_pid:
@@ -311,7 +386,7 @@ def main():
         # sessions to overwrite the same Herdr tab.
         if inferred_pid:
             pid=inferred_pid
-            if explicit_pid != inferred_pid and sid and root:
+            if explicit_pid != inferred_pid:
                 run(['tmux','set-environment','-t',session,'HERDR_PANE_ID',pid], timeout=0.8)
         else:
             # If the session is attached but its client tty is not a current Herdr
@@ -322,6 +397,11 @@ def main():
                 pid=''
             else:
                 pid=env_pid or ''
+        if pid:
+            if sid:
+                run(['tmux','set-environment','-t',session,'OMX_SESSION_ID',sid], timeout=0.8)
+            if root:
+                run(['tmux','set-environment','-t',session,'OMX_ROOT',root], timeout=0.8)
         if not pid or not sid or not root:
             continue
         if not pane_exists(pid):

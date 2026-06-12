@@ -272,17 +272,17 @@ def herdr_session_spawn_pid_map():
     if isinstance(data, dict):
         for ws in data.get("workspaces") or []:
             wid = ws.get("id")
+            if not wid:
+                continue
             for tab in ws.get("tabs") or []:
                 for local_id in (tab.get("panes") or {}).keys():
-                    pid = latest.get(str(local_id))
-                    if pid and wid:
-                        # Herdr CLI public pane ids use tab order within the
-                        # workspace (w...-1, w...-2, ...), while session.json
-                        # stores internal pane ids (2, 5, 6, 7...).
-                        for idx, candidate_tab in enumerate(ws.get("tabs") or [], start=1):
-                            if candidate_tab is tab:
-                                out[pid] = f"{wid}-{idx}"
-                                break
+                    local_id = str(local_id)
+                    pid = latest.get(local_id)
+                    if pid:
+                        # Herdr public pane ids use the pane-local id from
+                        # session.json, not the tab index. A new tab may start
+                        # with pane 3, so using tab order would report to pane 2.
+                        out[pid] = f"{wid}-{local_id}"
     return out
 
 
@@ -437,7 +437,7 @@ try:
         # correct generic state. This is intentionally global but strict: the
         # helper trusts only per-session hook state and OMX labels; it never
         # guesses from focus/cwd/visible text/title spinners.
-        helper = "/home/ugreenai/.local/bin/herdr-omx-reconcile"
+        helper = os.path.expanduser("~/.local/bin/herdr-omx-reconcile")
         if os.path.exists(helper) and not os.environ.get("HERDR_OMX_RECONCILING"):
             try:
                 subprocess.Popen([helper], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env={**os.environ, "HERDR_OMX_RECONCILING": "1"})
