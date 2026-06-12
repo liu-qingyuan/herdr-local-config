@@ -1,7 +1,7 @@
-# herdr-local-config
+# herdr-tmux-local-config
 
-Local configuration for using [Herdr](https://github.com/ogulcancelik/herdr) with
-Codex and oh-my-codex (OMX) on this workstation family.
+Local configuration for using [Herdr](https://github.com/ogulcancelik/herdr),
+Codex/oh-my-codex (OMX), and Oh My Tmux on this workstation family.
 
 This is **not** a Herdr fork. Herdr itself is installed from upstream release
 binaries; this repo tracks our local dotfile-level integration:
@@ -18,9 +18,13 @@ binaries; this repo tracks our local dotfile-level integration:
 dotfiles/herdr/config.toml                  # ~/.config/herdr/config.toml
 dotfiles/herdr/scripts/focus-next-tab.py    # ~/.config/herdr/scripts/focus-next-tab.py
 dotfiles/codex/herdr-agent-state.sh         # ~/.codex/herdr-agent-state.sh
+dotfiles/codex/herdr-omx-state.sh           # ~/.codex/herdr-omx-state.sh
 dotfiles/codex/hooks.herdr.json             # fragment to merge into ~/.codex/hooks.json
+dotfiles/tmux/.tmux.conf.local              # ~/.tmux.conf.local for Oh My Tmux + Catppuccin
+dotfiles/tmux/README.md                     # tmux layout notes
 shell/omx-herdr-wrapper.zsh                 # zsh functions for omx/omx-max
-scripts/install.sh                          # copies managed files with timestamped backups
+scripts/install.sh                          # copies managed Herdr/Codex files with timestamped backups
+scripts/install-tmux.sh                     # installs Oh My Tmux + Catppuccin tmux config
 scripts/verify.sh                           # syntax and simple secret-pattern checks
 ```
 
@@ -28,7 +32,12 @@ scripts/verify.sh                           # syntax and simple secret-pattern c
 
 ```bash
 ./scripts/install.sh
+./scripts/install-tmux.sh
 ```
+
+`install-tmux.sh` installs/updates Oh My Tmux (`gpakosz/.tmux`), Catppuccin tmux,
+and `tmux-cpu`, then links `~/.tmux.conf` and installs the tracked
+`~/.tmux.conf.local`.
 
 Then manually merge:
 
@@ -57,5 +66,5 @@ state moves through `working`/`idle` without reporting into the wrong tab.
 ## Security notes
 
 Do not commit full `~/.codex/config.toml`, auth files, SSH keys, tokens, or
-machine-specific secrets. Keep this repository to portable Herdr integration
-configuration only.
+machine-specific secrets. Keep this repository to portable Herdr, OMX, and tmux
+integration configuration only.
